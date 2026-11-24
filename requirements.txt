@@ -1,0 +1,2 @@
+BinaryOptionsToolsV2==0.2.18
+aiohttp==3.10.11
