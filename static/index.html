@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>Eagle Lenz stream</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --hull: #131711;
+    --deck: #1a2019;
+    --plate: #222a21;
+    --rivet: #37413a;
+    --text: #dedbc8;
+    --dim: #8c9382;
+    --amber: #efb02f;
+    --up: #58b88b;
+    --down: #e4694e;
+    --warn: #e48a2b;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--hull); color: var(--text); }
+  body {
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    font: 16px/1.45 Barlow, system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .bar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 12px 24px;
+    padding: 16px 20px 12px;
+    background: var(--deck);
+    border-bottom: 1px solid var(--rivet);
+  }
+  h1 {
+    margin: 0;
+    font: 700 32px/1 "Barlow Condensed", Barlow, sans-serif;
+    letter-spacing: 0.02em;
+  }
+  .sub { margin: 4px 0 0; color: var(--dim); font-size: 14px; }
+  .clockbox { display: flex; align-items: baseline; gap: 10px; }
+  #clock {
+    font: 600 30px/1 "Barlow Condensed", Barlow, sans-serif;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+  }
+  .tz { color: var(--dim); font-size: 14px; }
+
+  .chip {
+    display: inline-block;
+    padding: 1px 8px;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    font: 600 13px/1.5 Barlow, sans-serif;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .chip.live { color: var(--amber); }
+  .chip.stale { color: var(--warn); }
+  .chip.bad { color: var(--down); }
+
+  #banner {
+    margin: 12px 20px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--down);
+    color: var(--down);
+    border-radius: 3px;
+  }
+  #banner[hidden] { display: none; }
+
+  .panels {
+    flex: 1;
+    display: grid;
+    gap: 16px;
+    padding: 16px 20px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
+    align-content: start;
+  }
+  .panel {
+    background: var(--deck);
+    border: 1px solid var(--rivet);
+    border-radius: 3px;
+    padding: 14px 14px 10px;
+    min-width: 0;
+  }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .id { display: flex; align-items: baseline; gap: 10px; }
+  h2 { margin: 0; font: 600 24px/1.1 "Barlow Condensed", Barlow, sans-serif; letter-spacing: 0.02em; }
+  .tf { color: var(--dim); font-size: 14px; }
+  .state { display: flex; align-items: center; gap: 8px; }
+  .lamp {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--rivet);
+  }
+  .lamp.live { background: var(--amber); }
+  .lamp.stale { background: var(--warn); }
+  .lamp.bad { background: var(--down); }
+  .lamp.hit { animation: hit 0.45s ease-out; }
+  @keyframes hit {
+    0%   { box-shadow: 0 0 0 0 rgba(239, 176, 47, 0.75); background: #ffd36b; }
+    100% { box-shadow: 0 0 0 10px rgba(239, 176, 47, 0); }
+  }
+  @media (prefers-reduced-motion: reduce) { .lamp.hit { animation: none; } }
+
+  .read { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 24px; margin: 8px 0 6px; }
+  .price {
+    font: 700 clamp(40px, 7vw, 64px)/1 "Barlow Condensed", Barlow, sans-serif;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.01em;
+  }
+  .price.up { color: var(--up); }
+  .price.down { color: var(--down); }
+  .meta { display: flex; gap: 22px; margin: 0; }
+  .meta div { min-width: 56px; }
+  .meta dt { color: var(--dim); font-size: 12px; }
+  .meta dd { margin: 0; font: 600 20px/1.2 "Barlow Condensed", Barlow, sans-serif; font-variant-numeric: tabular-nums; }
+  .meta dd.warn { color: var(--warn); }
+
+  .chart { height: 420px; width: 100%; }
+  .detail { margin: 6px 0 0; min-height: 1.4em; color: var(--dim); font-size: 13px; }
+
+  footer { padding: 12px 20px 16px; text-align: center; color: var(--dim); font-size: 13px; border-top: 1px solid var(--rivet); }
+
+  @media (max-width: 560px) {
+    .chart { height: 320px; }
+    h1 { font-size: 26px; }
+    #clock { font-size: 24px; }
+    .panels, .bar { padding-left: 12px; padding-right: 12px; }
+  }
+</style>
+</head>
+<body>
+  <header class="bar">
+    <div>
+      <h1>Eagle Lenz</h1>
+      <p class="sub">Live stream test, 15 second candles</p>
+    </div>
+    <div class="clockbox">
+      <time id="clock">--:--:--.---</time>
+      <span class="tz">GMT+1</span>
+      <span id="link" class="chip">Connecting</span>
+    </div>
+  </header>
+
+  <p id="banner" hidden role="status"></p>
+  <main id="panels" class="panels"></main>
+  <footer>Kaptain Mike HQ (c)</footer>
+
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js" onerror="loadFallback()"></script>
+<script>
+  // If unpkg is unreachable, try jsdelivr with the same pinned version.
+  function loadFallback() {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js';
+    s.onload = () => boot();
+    s.onerror = () => showBanner('The chart library could not be loaded. Check your connection and reload.');
+    document.head.appendChild(s);
+  }
+  function showBanner(text) {
+    const b = document.getElementById('banner');
+    b.textContent = text;
+    b.hidden = !text;
+  }
+
+  function boot() {
+    const key = new URLSearchParams(location.search).get('key');
+    const panelsEl = document.getElementById('panels');
+    const clockEl = document.getElementById('clock');
+    const linkEl = document.getElementById('link');
+    const panels = new Map();
+    let clockOffset = 0;          // server time minus browser time, from the snapshot
+    let period = 15;
+
+    const TZ = 'Africa/Lagos';    // GMT+1, no daylight saving
+    const hms = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const serverNow = () => Date.now() + clockOffset;
+    const clockText = (ms) => hms.format(new Date(ms)) + '.' + String(new Date(ms).getUTCMilliseconds()).padStart(3, '0');
+    const chartTime = (t) => hms.format(new Date(t * 1000));
+
+    const LABEL = { LIVE: 'Live', STALE: 'Stale', CONNECTING: 'Connecting', RECONNECTING: 'Reconnecting', OFFLINE: 'Offline', LINK_LOST: 'No link' };
+    const TONE = { LIVE: 'live', STALE: 'stale', RECONNECTING: 'bad', OFFLINE: 'bad', LINK_LOST: 'bad', CONNECTING: '' };
+
+    function decimals(candles) {
+      let p = 2;
+      for (const c of candles.slice(-30)) {
+        for (const v of [c.open, c.high, c.low, c.close]) {
+          const s = String(v), i = s.indexOf('.');
+          if (i >= 0) p = Math.max(p, Math.min(6, s.length - i - 1));
+        }
+      }
+      return p;
+    }
+
+    function ensurePanel(asset) {
+      if (panels.has(asset.symbol)) return panels.get(asset.symbol);
+      const el = document.createElement('section');
+      el.className = 'panel';
+      el.innerHTML =
+        '<div class="head">' +
+          '<div class="id"><h2></h2><span class="tf"></span></div>' +
+          '<div class="state"><i class="lamp"></i><span class="chip">Connecting</span></div>' +
+        '</div>' +
+        '<div class="read">' +
+          '<div class="price">--</div>' +
+          '<dl class="meta">' +
+            '<div><dt>Tick age</dt><dd class="age">--</dd></div>' +
+            '<div><dt>Ticks</dt><dd class="n">0</dd></div>' +
+            '<div><dt>Closed candles</dt><dd class="cnt">0</dd></div>' +
+          '</dl>' +
+        '</div>' +
+        '<div class="chart"></div>' +
+        '<p class="detail"></p>';
+      panelsEl.appendChild(el);
+      el.querySelector('h2').textContent = asset.name;
+
+      const chart = LightweightCharts.createChart(el.querySelector('.chart'), {
+        autoSize: true,
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#9aa08f', fontFamily: 'Barlow, system-ui, sans-serif' },
+        grid: { vertLines: { color: 'rgba(222,219,200,0.05)' }, horzLines: { color: 'rgba(222,219,200,0.07)' } },
+        rightPriceScale: { borderColor: '#37413a' },
+        timeScale: {
+          borderColor: '#37413a', timeVisible: true, secondsVisible: true, rightOffset: 6,
+          tickMarkFormatter: (t) => chartTime(t),
+        },
+        localization: { timeFormatter: (t) => chartTime(t) },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      });
+      const series = chart.addCandlestickSeries({
+        upColor: '#58b88b', downColor: '#e4694e', borderVisible: false,
+        wickUpColor: '#58b88b', wickDownColor: '#e4694e',
+      });
+
+      const p = {
+        el, chart, series, bars: [], max: 99, lastPrice: null, lastTickMs: null,
+        priceEl: el.querySelector('.price'), ageEl: el.querySelector('.age'), nEl: el.querySelector('.n'),
+        cntEl: el.querySelector('.cnt'), chip: el.querySelector('.chip'), lamp: el.querySelector('.lamp'),
+        detailEl: el.querySelector('.detail'),
+      };
+      el.querySelector('.tf').textContent = period + 's';
+      panels.set(asset.symbol, p);
+      return p;
+    }
+
+    function setStatus(p, status, detail) {
+      const tone = TONE[status] ?? 'bad';
+      p.chip.textContent = LABEL[status] ?? status;
+      p.chip.className = 'chip ' + tone;
+      p.lamp.className = 'lamp ' + tone;
+      p.detailEl.textContent = detail || '';
+    }
+
+    function setPrice(p, price) {
+      if (price == null) return;
+      const digits = p.digits ?? 5;
+      p.priceEl.textContent = price.toFixed(digits);
+      if (p.lastPrice != null && price !== p.lastPrice) {
+        p.priceEl.className = 'price ' + (price > p.lastPrice ? 'up' : 'down');
+      }
+      p.lastPrice = price;
+    }
+
+    function pulse(p) {
+      p.lamp.classList.remove('hit');
+      void p.lamp.offsetWidth;
+      p.lamp.classList.add('hit');
+    }
+
+    function onSnapshot(msg) {
+      if (msg.server_ms) clockOffset = msg.server_ms - Date.now();
+      if (msg.period) period = msg.period;
+      if (msg.service) onService(msg.service);
+      for (const a of msg.assets) {
+        const p = ensurePanel(a);
+        p.max = msg.max_rows || p.max;
+        p.bars = a.closed.slice();
+        const data = a.forming ? p.bars.concat([a.forming]) : p.bars.slice();
+        p.digits = decimals(data);
+        p.series.applyOptions({ priceFormat: { type: 'price', precision: p.digits, minMove: Math.pow(10, -p.digits) } });
+        p.series.setData(data);
+        p.chart.timeScale().fitContent();
+        p.nEl.textContent = a.ticks;
+        p.cntEl.textContent = p.bars.length;
+        p.lastTickMs = a.last_tick_ms;
+        p.lastPrice = null;
+        setPrice(p, a.price);
+        setStatus(p, a.status, a.detail);
+      }
+    }
+
+    function onTick(msg) {
+      const p = panels.get(msg.symbol);
+      if (!p || !msg.forming) return;
+      p.series.update(msg.forming);
+      setPrice(p, msg.price);
+      p.lastTickMs = msg.ts;
+      p.nEl.textContent = msg.n;
+      pulse(p);
+    }
+
+    function onCandle(msg) {
+      const p = panels.get(msg.symbol);
+      if (!p) return;
+      const c = msg.candle;
+      const last = p.bars.length ? p.bars[p.bars.length - 1].time : 0;
+      if (c.time <= last) return;
+      p.bars.push(c);
+      if (p.bars.length > p.max) {
+        // Keep exactly the last 99 closed candles on screen; the next tick re-adds the live one.
+        p.bars.splice(0, p.bars.length - p.max);
+        p.series.setData(p.bars);
+      } else {
+        p.series.update(c);
+      }
+      p.cntEl.textContent = p.bars.length;
+    }
+
+    function onStatus(msg) {
+      const p = panels.get(msg.symbol);
+      if (p) setStatus(p, msg.status, msg.detail);
+    }
+
+    function onService(s) {
+      const bad = s.status !== 'RUNNING' && s.status !== 'STARTING' && s.status !== 'CONNECTING';
+      showBanner(bad ? (s.detail || s.status) : '');
+    }
+
+    function handle(msg) {
+      switch (msg.type) {
+        case 'snapshot': return onSnapshot(msg);
+        case 'tick': return onTick(msg);
+        case 'candle': return onCandle(msg);
+        case 'status': return onStatus(msg);
+        case 'service': return onService(msg);
+      }
+    }
+
+    // Clock and tick age refresh independently of incoming data.
+    setInterval(() => {
+      const now = serverNow();
+      clockEl.textContent = clockText(now);
+      for (const p of panels.values()) {
+        if (p.lastTickMs == null) continue;
+        const age = Math.max(0, now - p.lastTickMs);
+        p.ageEl.textContent = (age / 1000).toFixed(1) + ' s';
+        p.ageEl.classList.toggle('warn', age > 5000);
+      }
+    }, 50);
+
+    // WebSocket with automatic reconnect.
+    let ws = null, tries = 0;
+    function setLink(text, tone) { linkEl.textContent = text; linkEl.className = 'chip ' + (tone || ''); }
+    function connect() {
+      setLink('Connecting');
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(proto + '://' + location.host + '/ws' + (key ? '?key=' + encodeURIComponent(key) : ''));
+      ws.onopen = () => { tries = 0; setLink('Linked', 'live'); };
+      ws.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch (err) { console.error(err); } };
+      ws.onclose = () => {
+        setLink('No link', 'bad');
+        for (const p of panels.values()) setStatus(p, 'LINK_LOST', 'Lost the connection to the server. Retrying.');
+        setTimeout(connect, Math.min(10000, 1000 * 2 ** tries++));
+      };
+      ws.onerror = () => ws.close();
+    }
+    connect();
+  }
+
+  if (window.LightweightCharts) boot();
+</script>
+</body>
+</html>
