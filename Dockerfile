@@ -10,7 +10,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY app.py .
+COPY app.py feed.py history_probe.py ./
 COPY static ./static
 
 # Railway injects PORT; app.py reads it.
