@@ -30,6 +30,28 @@ Do not run the same SSID locally while it is deployed.
 | `STALL_SECONDS` | `30` | No tick this long: reconnect the SSID |
 | `BACKOFF_SECONDS` | `5,10,20,40,60,120` | Reconnect delays (jitter added) |
 | `AUTH_RETRY_SECONDS` | `300` | Wait if the broker never confirmed the SSID |
+| `CANDLE_SOURCE` | `aligned` | `aligned`: closed candles from the library's clock-aligned subscription (the developer's suggestion). `ticks`: our own tick-built candles |
+| `USE_HISTORY` | `1` | `0` skips history entirely: the chart starts empty and fills as candles close |
+| `VERIFY_BUCKETS` | `3` | Complete live candles history must match before it is trusted |
+
+## Candle history
+
+The chart never trusts history blindly. It builds candles from live ticks, then fetches the broker
+chart history and the tick-page history, and only merges a source whose candles match the live
+candles for the same timestamps (it also tries clock shifts in 15 minute steps). The line under each
+chart says what happened, for example `History: chart feed, 99 candles, verified against 3/3 complete
+live candles`, or `History not verified (...). Building from live ticks.`
+
+The first candle after a start is hidden unless verified history replaces it, because joining
+mid-candle gives a partial candle.
+
+To see which history source is right, run the probe once (about two minutes):
+
+    POCKET_OPTION_SSID='42["auth",{...}]' python history_probe.py EURHUF_otc 15
+
+It prints a verdict per source and writes `history_probe_report.json` for the developer. On Railway,
+set a temporary custom start command `python history_probe.py EURHUF_otc 15` and read the deploy logs
+(the report file is not kept; copy the printed output).
 
 ## Notes
 
