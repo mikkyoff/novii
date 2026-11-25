@@ -25,6 +25,8 @@ from aiohttp import WSMsgType, web
 
 from BinaryOptionsToolsV2.pocketoption.asynchronous import PocketOptionAsync
 
+from feed import CandleFeed
+
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(message)s",
@@ -71,16 +73,15 @@ if len(ASSETS) > MAX_STREAMS:
 
 STALE_AFTER = _float("STALE_AFTER_SECONDS", 5.0)  # badge turns to "Stale"
 STALL_SECONDS = _float("STALL_SECONDS", 30.0)  # no tick this long -> reconnect the SSID
-FIRST_UPDATE_TIMEOUT = _float("FIRST_UPDATE_TIMEOUT", 150.0)  # history backfill + first tick
+FIRST_UPDATE_TIMEOUT = _float("FIRST_UPDATE_TIMEOUT", 90.0)  # subscribe + first tick
 CONNECT_TIMEOUT = _float("CONNECT_TIMEOUT", 60.0)
 CONFIRM_SECONDS = _float("CONFIRM_SECONDS", 15.0)
-STAGGER_SECONDS = _float("STAGGER_SECONDS", 3.0)  # delay between starting each asset
+VERIFY_BUCKETS = _int("VERIFY_BUCKETS", 3)  # complete live candles to check history against
+CANDLE_SOURCE = os.environ.get("CANDLE_SOURCE", "aligned").strip().lower()  # aligned | ticks
+USE_HISTORY = os.environ.get("USE_HISTORY", "1").strip().lower() not in ("0", "false", "no", "off")
 AUTH_RETRY_SECONDS = _float("AUTH_RETRY_SECONDS", 300.0)
 SEND_TIMEOUT = 2.0
 BACKOFF = _backoff()
-
-# 99 closed candles of history, with headroom. The tick-compiled backfill is cheap at 15s.
-HISTORY_HOURS = max(0.5, (CLOSED_CANDLES + 5) * PERIOD / 3600.0)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -112,6 +113,8 @@ class AssetState:
     detail: str = ""
     ticks: int = 0
     last_tick_wall: float = 0.0  # unix seconds when the last tick reached the server
+    history_source: str = "none"
+    cross: str = ""
 
     @property
     def price(self) -> Optional[float]:
@@ -191,21 +194,29 @@ class Hub:
             await self.set_status(symbol, status, detail)
 
     # -- data
-    async def apply_update(self, state: AssetState, closed: list, forming: Optional[dict], first: bool) -> None:
+    async def apply_update(self, state: AssetState, closed: list, forming: Optional[dict], event: str, info: dict) -> None:
         previous_last = state.closed[-1]["time"] if state.closed else None
         state.closed = closed
         state.forming = forming
         state.last_tick_wall = time.time()
+        state.history_source = info.get("source", "none")
+        state.cross = info.get("cross", "")
 
-        if first:
-            # Fresh backfill (first start or after a reconnect): resync the chart.
-            state.status, state.detail, state.ticks = "LIVE", "", 0
+        if event in ("seed", "history"):
+            # First data, or verified history was just merged: resync the whole chart.
+            if event == "seed":
+                state.ticks = 0
+            state.status, state.detail = "LIVE", info.get("detail", "")
             await self.broadcast(self.snapshot_message([state.symbol]))
+            return
+
+        if event == "note":
+            await self.set_status(state.symbol, "LIVE", info.get("detail", ""))
             return
 
         state.ticks += 1
         if state.status != "LIVE":
-            await self.set_status(state.symbol, "LIVE")
+            await self.set_status(state.symbol, "LIVE", state.detail)
 
         # A candle just closed: tell the browser its final values.
         if closed and (previous_last is None or closed[-1]["time"] > previous_last):
@@ -230,26 +241,26 @@ class StreamStalled(Exception):
     pass
 
 
-async def stream_asset(client: PocketOptionAsync, hub: Hub, symbol: str, delay: float) -> None:
-    """Backfill history, then stream the forming candle tick by tick for one asset."""
-    if delay:
-        await asyncio.sleep(delay)
+async def stream_asset(client: PocketOptionAsync, hub: Hub, symbol: str, lock: asyncio.Lock) -> None:
+    """Stream one asset: live candles from ticks, plus history that passed verification."""
     state = hub.assets[symbol]
-    await hub.set_status(symbol, "CONNECTING", "loading history")
+    await hub.set_status(symbol, "CONNECTING", "subscribing")
 
-    generator = client.get_candles_live(symbol, PERIOD, hours=HISTORY_HOURS, max_rows=CLOSED_CANDLES)
+    feed = CandleFeed(client, symbol, PERIOD, CLOSED_CANDLES, lock, verify_buckets=VERIFY_BUCKETS,
+                      source=CANDLE_SOURCE, use_history=USE_HISTORY)
+    generator = feed.stream()
     first = True
     async with aclosing(generator):
         updates = generator.__aiter__()
         while True:
             timeout = FIRST_UPDATE_TIMEOUT if first else STALL_SECONDS
             try:
-                closed, forming = await asyncio.wait_for(updates.__anext__(), timeout)
+                closed, forming, event = await asyncio.wait_for(updates.__anext__(), timeout)
             except asyncio.TimeoutError:
                 raise StreamStalled(f"{symbol}: no data for {timeout:.0f}s") from None
             except StopAsyncIteration:
                 raise StreamStalled(f"{symbol}: stream ended") from None
-            await hub.apply_update(state, closed, forming, first)
+            await hub.apply_update(state, closed, forming, event, feed.info)
             first = False
 
 
@@ -305,10 +316,8 @@ async def supervisor(hub: Hub) -> None:
                 log.warning("Broker has not confirmed the session yet; streaming anyway")
             await hub.set_service("RUNNING", "" if confirmed else "session not confirmed by broker yet")
 
-            tasks = [
-                asyncio.create_task(stream_asset(client, hub, symbol, index * STAGGER_SECONDS))
-                for index, symbol in enumerate(hub.assets)
-            ]
+            lock = asyncio.Lock()  # one subscribe/history call at a time on this connection
+            tasks = [asyncio.create_task(stream_asset(client, hub, symbol, lock)) for symbol in hub.assets]
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
             for task in pending:
                 task.cancel()
@@ -382,6 +391,8 @@ async def health(request: web.Request) -> web.Response:
             "assets": {
                 symbol: {
                     "status": state.status,
+                    "history": state.history_source,
+                    "cross_check": state.cross,
                     "tick_age_s": round(now - state.last_tick_wall, 1) if state.last_tick_wall else None,
                 }
                 for symbol, state in hub.assets.items()
@@ -410,7 +421,8 @@ async def ws_handler(request: web.Request) -> web.StreamResponse:
 async def background(app: web.Application):
     hub: Hub = app["hub"]
     tasks = [asyncio.create_task(supervisor(hub)), asyncio.create_task(monitor(hub))]
-    log.info("Streaming %s on %ss candles (%d closed + live)", list(hub.assets), PERIOD, CLOSED_CANDLES)
+    log.info("Streaming %s on %ss candles (%d closed + live), candle source=%s, history=%s",
+             list(hub.assets), PERIOD, CLOSED_CANDLES, CANDLE_SOURCE, USE_HISTORY)
     yield
     for task in tasks:
         task.cancel()
