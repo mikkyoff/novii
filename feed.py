@@ -102,6 +102,9 @@ class Assessment:
     age: Optional[float] = None  # seconds between newest source candle and the live clock
     candles: list = field(default_factory=list)  # source candles after the shift
     rows: list = field(default_factory=list)  # overlap table, for the probe
+    trimmed: int = 0  # older candles dropped because the chain of candles broke
+    break_note: str = ""  # where and why it broke
+    spacing: dict = field(default_factory=dict)  # spacing/alignment stats, for the probe
 
     def to_dict(self) -> dict:
         data = {k: v for k, v in self.__dict__.items() if k not in ("candles", "rows")}
@@ -136,6 +139,49 @@ def _shifts() -> list[int]:
     return [0] + sorted(others, key=lambda s: (abs(s), s))
 
 
+def spacing_stats(candles: list[dict], period: int, last: int = 60) -> dict:
+    """How the candle timestamps are spaced. Reveals wrong-granularity history
+    (for example minute candles returned for a 15s request)."""
+    tail = candles[-last:]
+    diffs = [b["time"] - a["time"] for a, b in zip(tail, tail[1:])]
+    exact = sum(1 for d in diffs if d == period)
+    aligned = sum(1 for c in tail if c["time"] % period == 0)
+    histogram: dict[int, int] = {}
+    for d in diffs:
+        histogram[d] = histogram.get(d, 0) + 1
+    common = sorted(histogram.items(), key=lambda kv: -kv[1])[:4]
+    return {
+        "exact_fraction": exact / len(diffs) if diffs else 0.0,
+        "aligned_fraction": aligned / len(tail) if tail else 0.0,
+        "common_spacings": common,
+    }
+
+
+def contiguous_tail(candles: list[dict], period: int, jump_tol: float) -> tuple[list[dict], str]:
+    """Walk back from the newest candle and keep the unbroken chain only.
+
+    A break is a time gap of more than two periods or a price jump between one candle's
+    close and the next candle's open. Everything older than the first break is untrusted:
+    that is where stale blocks get stitched on.
+    """
+    if not candles:
+        return [], ""
+    start = len(candles) - 1
+    note = ""
+    for i in range(len(candles) - 1, 0, -1):
+        newer, older = candles[i], candles[i - 1]
+        gap = newer["time"] - older["time"]
+        jump = abs(newer["open"] - older["close"])
+        if gap > 2 * period:
+            note = f"time gap of {gap}s before {newer['time']}"
+            break
+        if jump > jump_tol:
+            note = f"price jump of {jump:.6g} before {newer['time']}"
+            break
+        start = i - 1
+    return candles[start:], note
+
+
 def assess_history(
     history: list[dict],
     live_full: list[dict],
@@ -160,12 +206,15 @@ def assess_history(
         tol = max(3 * median_range(live_full), 5e-5 * ref_price)
         for shift in _shifts():
             rows, matched = _overlap(live_full, by_time, shift, tol)
-            if rows and matched >= min(2, len(rows)) and matched / len(rows) >= 0.6:
+            covered = len(rows) / len(live_full)  # history must contain the live window, not a sample of it
+            if rows and covered >= 0.8 and matched >= min(2, len(rows)) and matched / len(rows) >= 0.6:
                 chosen = Assessment(True, mode="overlap", shift=shift, compared=len(rows), matched=matched, rows=rows)
                 break
         if chosen is None:
             rows, matched = _overlap(live_full, by_time, 0, tol)
-            if rows:
+            if rows and len(rows) < 0.8 * len(live_full):
+                reason = f"history holds only {len(rows)} of {len(live_full)} live candle times (wrong granularity?)"
+            elif rows:
                 reason = f"{matched}/{len(rows)} overlapping candles match the live ticks"
             else:
                 reason = f"history ends {ref_time - newest:.0f}s before the live data and does not contain it"
@@ -188,15 +237,26 @@ def assess_history(
             )
 
     corrected = [{**c, "time": c["time"] + chosen.shift} for c in history]
-    chosen.candles = corrected
     chosen.age = ref_time - corrected[-1]["time"]
 
-    # Stitched-together stale blocks show up as price jumps between neighbouring candles.
-    jump_tol = max(10 * hist_range, 5e-4 * ref_price)
-    jumps = sum(1 for a, b in zip(corrected, corrected[1:]) if abs(b["open"] - a["close"]) > jump_tol)
-    if jumps > 0.1 * len(corrected):
+    stats = spacing_stats(corrected, period)
+    chosen.spacing = stats
+    if stats["exact_fraction"] < 0.85 or stats["aligned_fraction"] < 0.9:
         chosen.ok = False
-        chosen.reason = f"{jumps} price jumps between neighbouring candles"
+        chosen.reason = (f"candles are not {period}s apart (common spacings {stats['common_spacings']}), "
+                         f"{stats['aligned_fraction']:.0%} aligned to the period")
+        return chosen
+
+    # Only trust the unbroken chain that leads up to the verified live edge.
+    jump_tol = max(10 * hist_range, 5e-4 * ref_price)
+    tail, note = contiguous_tail(corrected, period, jump_tol)
+    chosen.trimmed = len(corrected) - len(tail)
+    chosen.break_note = note
+    if len(tail) < MIN_HISTORY:
+        chosen.ok = False
+        chosen.reason = f"only {len(tail)} unbroken candles reach the live data ({note or 'too few'})"
+        return chosen
+    chosen.candles = tail
     return chosen
 
 
@@ -382,6 +442,8 @@ class CandleFeed:
         how = (f"verified against {result.matched}/{result.compared} complete live candles"
                if result.mode == "overlap" else "checked by age and price only")
         fix = f", clock corrected by {result.shift:+d}s" if result.shift else ""
+        if result.trimmed:
+            fix += f", dropped {result.trimmed} older candles after a break ({result.break_note})"
         self.info.update({
             "source": result.reason,
             "detail": f"History: {result.reason} feed, {len(history)} candles, {how}{fix}",
