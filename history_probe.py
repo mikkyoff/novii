@@ -28,7 +28,7 @@ from importlib import metadata
 
 from BinaryOptionsToolsV2.pocketoption.asynchronous import PocketOptionAsync
 
-from feed import assess_history, candle_time, median_range, normalize
+from feed import assess_history, candle_time, median_range, normalize, spacing_stats
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -164,8 +164,15 @@ async def main() -> None:
                       f"(newest is {age:.0f}s before the live clock)")
                 print(f"   median candle range {median_range(candles[-30:]):.6g}, last close {candles[-1]['close']}, "
                       f"live price {ref_price}")
+            if candles:
+                sp = spacing_stats(candles, PERIOD)
+                print(f"   spacing: {sp['exact_fraction']:.0%} of neighbours are exactly {PERIOD}s apart, "
+                      f"{sp['aligned_fraction']:.0%} aligned to {PERIOD}s; most common gaps {sp['common_spacings']}")
             verdict = assess_history(candles, reference, PERIOD, ref_time, ref_price)
             if verdict.ok:
+                if verdict.trimmed:
+                    print(f"   NOTE: only the newest {len(verdict.candles)} candles form an unbroken chain; "
+                          f"{verdict.trimmed} older ones dropped ({verdict.break_note})")
                 fix = f", needs a clock shift of {verdict.shift:+d}s" if verdict.shift else ""
                 print(f"   VERDICT: matches the market ({verdict.matched}/{verdict.compared} overlapping candles){fix}")
             else:
